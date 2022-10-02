@@ -8,7 +8,7 @@
 #include <mutex>
 #include "rkaiq_cmdid.h"
 #include "rkaiq_socket.h"
-#include "ae/rk_aiq_ae_algo.h"
+#include "rk_aiq_types.h"
 #include <thread>
 
 #ifdef LOG_TAG

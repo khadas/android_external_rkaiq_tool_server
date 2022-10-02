@@ -1,0 +1,112 @@
+From 995a944e55d36c2287a1f5268c67ccb6568791d2 Mon Sep 17 00:00:00 2001
+From: "willam.wei" <willam.wei@rock-chips.com>
+Date: Thu, 8 Sep 2022 16:42:15 +0800
+Subject: [PATCH] sync: Tuning: add CMD for get 3Astats.
+
+Change-Id: I2e8d17d7bf978b61b7741f7eb361c7e893a429d7
+---
+ include/ipc_server/rkaiq_tool_sysctl.h |  2 ++
+ include/ipc_server/socket_server.h     |  8 ++++++++
+ ipc_server/command_process.cpp         | 14 ++++++++++++++
+ ipc_server/rkaiq_tool_sysctl.cpp       | 18 ++++++++++++++++++
+ uAPI/rk_aiq_user_api_sysctl.cpp        |  3 ++-
+ 5 files changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/include/ipc_server/rkaiq_tool_sysctl.h b/include/ipc_server/rkaiq_tool_sysctl.h
+index 64d7708..aaff259 100755
+--- a/include/ipc_server/rkaiq_tool_sysctl.h
++++ b/include/ipc_server/rkaiq_tool_sysctl.h
+@@ -24,6 +24,8 @@ int queryWBInfo(rk_aiq_sys_ctx_t* ctx, char* data);
+ int setAcpAttrib(rk_aiq_sys_ctx_t* ctx, char* data);
+ int getAcpAttrib(rk_aiq_sys_ctx_t* ctx, char* data);
+ int enqueueRkRawFile(rk_aiq_sys_ctx_t* ctx, char* data);
++int get3AStats(rk_aiq_sys_ctx_t* ctx, char* data);
++int get3AStatsBlk(rk_aiq_sys_ctx_t* ctx, char* data);
+ #endif
+ 
+ 
+diff --git a/include/ipc_server/socket_server.h b/include/ipc_server/socket_server.h
+index cba3e8f..3a665da 100755
+--- a/include/ipc_server/socket_server.h
++++ b/include/ipc_server/socket_server.h
+@@ -318,4 +318,12 @@ enum {
+   ENUM_ID_ATMO_END,
+ };
+ 
++enum
++{
++  ENUM_ID_AIQ_UAPI_START = 0X1F00,
++  ENUM_ID_AIQ_UAPI_SYSCTL_GET3ASTATS,
++  ENUM_ID_AIQ_UAPI_SYSCTL_GET3ASTATSBLK,
++  ENUM_ID_AIQ_UAPI_END,
++};
++
+ #endif
+diff --git a/ipc_server/command_process.cpp b/ipc_server/command_process.cpp
+index 484a031..4430151 100755
+--- a/ipc_server/command_process.cpp
++++ b/ipc_server/command_process.cpp
+@@ -396,6 +396,20 @@ int ProcessCommand(rk_aiq_sys_ctx_t* ctx, RkAiqSocketPacket *dataRecv, RkAiqSock
+         dataReply->dataSize = 0;
+         break;
+     }
++    case ENUM_ID_AIQ_UAPI_SYSCTL_GET3ASTATS:
++    {
++        dataReply->dataSize = sizeof(rk_aiq_isp_stats_t);
++        dataReply->data = (char*)malloc(dataReply->dataSize);
++        dataReply->commandResult = get3AStats(ctx, dataReply->data);
++        break;
++    }
++    case ENUM_ID_AIQ_UAPI_SYSCTL_GET3ASTATSBLK:
++    {
++        dataReply->dataSize = sizeof(rk_aiq_isp_stats_t);
++        dataReply->data = (char*)malloc(dataReply->dataSize);
++        dataReply->commandResult = get3AStatsBlk(ctx, dataReply->data);
++        break;
++    }
+     default:
+         LOGE("AIQ IPC UNKNOWN CMD: %d\n", dataRecv->commandID);
+         return -1;
+diff --git a/ipc_server/rkaiq_tool_sysctl.cpp b/ipc_server/rkaiq_tool_sysctl.cpp
+index 9a57ada..4b54b66 100755
+--- a/ipc_server/rkaiq_tool_sysctl.cpp
++++ b/ipc_server/rkaiq_tool_sysctl.cpp
+@@ -114,3 +114,21 @@ int enqueueRkRawFile(rk_aiq_sys_ctx_t* ctx, char* data)
+ {
+     return rk_aiq_uapi_sysctl_enqueueRkRawFile(ctx, data);
+ }
++
++int get3AStats(rk_aiq_sys_ctx_t* ctx, char* data)
++{
++    return rk_aiq_uapi_sysctl_get3AStats(ctx, (rk_aiq_isp_stats_t*)data);
++}
++
++int get3AStatsBlk(rk_aiq_sys_ctx_t* ctx, char* data)
++{
++    rk_aiq_isp_stats_t* new_stats = NULL;
++    rk_aiq_uapi_sysctl_get3AStatsBlk(ctx, &new_stats, -1);
++    if (new_stats) {
++      memcpy(data, new_stats, sizeof(rk_aiq_isp_stats_t));
++      rk_aiq_uapi_sysctl_release3AStatsRef(ctx, new_stats);
++      return 0;
++    } else {
++      return -1;
++    }
++}
+diff --git a/uAPI/rk_aiq_user_api_sysctl.cpp b/uAPI/rk_aiq_user_api_sysctl.cpp
+index 054771d..3af431d 100755
+--- a/uAPI/rk_aiq_user_api_sysctl.cpp
++++ b/uAPI/rk_aiq_user_api_sysctl.cpp
+@@ -728,7 +728,8 @@ void
+ rk_aiq_uapi_sysctl_release3AStatsRef(const rk_aiq_sys_ctx_t* ctx,
+                                      rk_aiq_isp_stats_t *stats)
+ {
+-    RKAIQ_API_SMART_LOCK(ctx);
++    // blocked API, add lock ?
++    // RKAIQ_API_SMART_LOCK(ctx);
+     ctx->_analyzer->release3AStatsRef(stats);
+ }
+ 
+-- 
+2.7.4
+

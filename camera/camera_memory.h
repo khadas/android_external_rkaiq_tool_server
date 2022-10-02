@@ -21,7 +21,7 @@
 #include <unistd.h>
 #include <vector>
 using namespace std;
-#include "ae/rk_aiq_ae_algo.h"
+#include "rk_aiq_types.h"
 
 #include "logger/log.h"
 

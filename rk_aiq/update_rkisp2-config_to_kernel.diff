@@ -1,0 +1,12 @@
+diff --git a/include/common/rkisp2-config.h b/include/common/rkisp2-config.h
+index 016f37a..1891fe9 100755
+--- a/include/common/rkisp2-config.h
++++ b/include/common/rkisp2-config.h
+@@ -290,6 +290,7 @@ struct rkisp_meshbuf_size {
+ 	u32 unite_isp_id;
+ 	u32 meas_width;
+ 	u32 meas_height;
++	int buf_cnt;
+ } __attribute__ ((packed));
+ 
+ struct isp2x_mesh_head {
