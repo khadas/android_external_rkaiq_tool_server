@@ -46,7 +46,7 @@ int TCPServer::Recvieve(int cilent_socket)
     LOG_DEBUG("TCPServer::Recvieve enter %d\n", cilent_socket);
     char buffer[MAXPACKETSIZE];
     int size = sizeof(buffer);
-    struct timeval interval = {3, 0};
+    struct timeval interval = {0, 1000 * 100};
     setsockopt(cilent_socket, SOL_SOCKET, SO_RCVTIMEO, (char*)&interval, sizeof(struct timeval));
     while (!quit_.load()) {
         int length = recv(cilent_socket, buffer, size, 0);

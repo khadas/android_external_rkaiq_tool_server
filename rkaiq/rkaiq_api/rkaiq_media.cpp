@@ -429,6 +429,30 @@ void RKAiqMedia::GetCifSubDevs(int id, struct media_device* device, const char* 
         }
     }
 
+    entity = media_get_entity_by_name(device, "rkcif_tools_id0");
+    if (entity) {
+        entity_name = media_entity_get_devname(entity);
+        if (entity_name) {
+            cif_info->rkcif_tools_id0 = entity_name;
+        }
+    }
+
+    entity = media_get_entity_by_name(device, "rkcif_tools_id1");
+    if (entity) {
+        entity_name = media_entity_get_devname(entity);
+        if (entity_name) {
+            cif_info->rkcif_tools_id0 = entity_name;
+        }
+    }
+
+    entity = media_get_entity_by_name(device, "rkcif_tools_id2");
+    if (entity) {
+        entity_name = media_entity_get_devname(entity);
+        if (entity_name) {
+            cif_info->rkcif_tools_id0 = entity_name;
+        }
+    }
+
     entity = media_get_entity_by_name(device, "rkcif-mipi-luma");
     if (entity) {
         entity_name = media_entity_get_devname(entity);
@@ -635,7 +659,7 @@ int RKAiqMedia::LinkToSensor(int cam_index)
         linkToCif = true;
         LOG_INFO("sensor %d linked to rkcif mipi lvds!!!", cam_index);
     } else if (!isp_info->media_dev_path.empty()) {
-        linkToIsp =true;
+        linkToIsp = true;
         LOG_INFO("sensor %d linked to rkisp!!!", cam_index);
     } else if (!dvp_info->media_dev_path.empty()) {
         linkToDvp = true;
@@ -1007,6 +1031,7 @@ int RKAiqMedia::DumpMediaInfo()
             LOG_INFO("\t mipi_id1 : 		  %s\n", cif->mipi_id1.c_str());
             LOG_INFO("\t mipi_id2 : 		  %s\n", cif->mipi_id2.c_str());
             LOG_INFO("\t mipi_id3 : 		  %s\n", cif->mipi_id3.c_str());
+            LOG_INFO("\t rkcif_tools_id0 :   %s\n", cif->rkcif_tools_id0.c_str());
             LOG_INFO("\t mipi_dphy_rx_path : %s\n", cif->mipi_dphy_rx_path.c_str());
             LOG_INFO("\t mipi_csi2_sd_path : %s\n", cif->mipi_csi2_sd_path.c_str());
             LOG_INFO("\t lvds_sd_path :      %s\n", cif->lvds_sd_path.c_str());

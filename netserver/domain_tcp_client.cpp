@@ -92,7 +92,7 @@ bool DomainTCPClient::Setup(string domainPath)
 
     server.sun_family = AF_UNIX;
     strcpy(server.sun_path, domainPath.c_str());
-    struct timeval timeout = {1, 0}; // 1 sec
+    struct timeval timeout = {0, 50 * 1000}; // 50 ms
     int ret = setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
     if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {

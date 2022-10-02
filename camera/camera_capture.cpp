@@ -1,9 +1,13 @@
 #include "camera_capture.h"
+#include "rkaiq_common.h"
 
 #ifdef LOG_TAG
     #undef LOG_TAG
 #endif
 #define LOG_TAG "aiqtool"
+
+extern uint32_t g_sensorHdrMode;
+extern int g_sensorMemoryMode;
 
 void process_image(struct capture_info* cap_info, const void* p, int size)
 {
@@ -50,6 +54,8 @@ int read_frame(struct capture_info* cap_info)
             if (device_dqbuf(cap_info->dev_fd, &buf) == -1)
                 break;
 
+            LOG_INFO("RAW capture, sequence:%u\n", buf.sequence);
+            cap_info->sequence = buf.sequence;
             assert(buf.index < cap_info->n_buffers);
 
             if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == cap_info->capture_buf_type) {
@@ -124,6 +130,8 @@ int read_frame(int handler, int index, struct capture_info* cap_info, CaptureCal
             if (device_dqbuf(cap_info->dev_fd, &buf) == -1)
                 break;
 
+            LOG_INFO("RAW capture, sequence:%u\n", buf.sequence);
+            cap_info->sequence = buf.sequence;
             assert(buf.index < cap_info->n_buffers);
 
             if (V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE == cap_info->capture_buf_type) {
@@ -270,6 +278,18 @@ int init_device(struct capture_info* cap_info)
     int ret;
 
     cap_info->dev_fd = device_open(cap_info->dev_name);
+    if (ioctl(cap_info->dev_fd, RKCIF_CMD_GET_CSI_MEMORY_MODE, &g_sensorMemoryMode) > 0) // get original memory mode
+    {
+        LOG_ERROR("get cif node %s memory mode failed.\n", cap_info->dev_name);
+    } else {
+        LOG_INFO("get cif node memory mode:%d .\n", g_sensorMemoryMode);
+    }
+
+    if (g_sensorHdrMode == NO_HDR) {
+        int value = CSI_LVDS_MEM_WORD_LOW_ALIGN;
+        ioctl(cap_info->dev_fd, RKCIF_CMD_SET_CSI_MEMORY_MODE, &value); // set to no compact
+        LOG_INFO("cif node %s set to no compact mode.\n", cap_info->dev_name);
+    }
 
     if (-1 != device_querycap(cap_info->dev_fd, &cap)) {
         if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) && !(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)) {

@@ -116,7 +116,7 @@ int ConnectAiq()
         return -1;
     }
 #else
-    if (g_tcpClient.Setup("/tmp/UNIX.domain") == false) {
+    if (g_tcpClient.Setup("/tmp/UNIX.domain0") == false) {
         LOG_INFO("domain connect failed\n");
         g_tcpClient.Close();
         return -1;
@@ -246,7 +246,7 @@ int RkAiqSocketClientINETReceive(int commandID, void* data, unsigned int dataSiz
     offset += packetData.dataSize;
     memcpy(dataToSend + offset, (void*)&packetData.dataHash, sizeof(packetData.dataHash));
 
-    LOG_DEBUG("INET receive 1: dataHash %08x\n", packetData.dataHash);
+    // LOG_DEBUG("INET receive 1: dataHash %08x\n", packetData.dataHash);
 
     int ret = g_tcpClient.Send(dataToSend, packetSize);
     if (ret < 0 && (errno != EAGAIN && errno != EINTR)) {
@@ -276,18 +276,18 @@ int RkAiqSocketClientINETReceive(int commandID, void* data, unsigned int dataSiz
     // receive data
     char tmpStr[6] = {};
     g_tcpClient.Receive(tmpStr, 6);
-    LOG_DEBUG("INET receive : magic & header received\n");
+    // LOG_DEBUG("INET receive : magic & header received\n");
     if (tmpStr[0] != 'R' || tmpStr[1] != 'K') {
-        LOG_DEBUG("INET receive : packet magic check failed. return\n");
+        // LOG_DEBUG("INET receive : packet magic check failed. return\n");
         g_tcpClient.Receive(MAX_PACKET_SIZE);
         return 1;
     }
-    LOG_DEBUG("INET receive : packet magic check pass.\n");
+    // LOG_DEBUG("INET receive : packet magic check pass.\n");
 
     packetSize =
         (tmpStr[2] & 0xff) | ((tmpStr[3] & 0xff) << 8) | ((tmpStr[4] & 0xff) << 16) | ((tmpStr[5] & 0xff) << 24);
-    LOG_DEBUG("INET receive : packetSize:%u\n", packetSize);
-    LOG_DEBUG("INET receive : dataSize:%u\n", dataSize);
+    // LOG_DEBUG("INET receive : packetSize:%u\n", packetSize);
+    // LOG_DEBUG("INET receive : dataSize:%u\n", dataSize);
     if (packetSize <= 0 || packetSize - dataSize > 200) {
         printf("INET no data received or packetSize error, return.\n");
         return 1;
@@ -303,7 +303,7 @@ int RkAiqSocketClientINETReceive(int commandID, void* data, unsigned int dataSiz
     struct timespec startTime = {0, 0};
     struct timespec currentTime = {0, 0};
     clock_gettime(CLOCK_REALTIME, &startTime);
-    printf("INET get, start receive:%ld\n", startTime.tv_sec);
+    // printf("INET get, start receive:%ld\n", startTime.tv_sec);
     while (remain_size > 0) {
         clock_gettime(CLOCK_REALTIME, &currentTime);
         if (currentTime.tv_sec - startTime.tv_sec >= 2) {
@@ -321,7 +321,7 @@ int RkAiqSocketClientINETReceive(int commandID, void* data, unsigned int dataSiz
         recv_size = g_tcpClient.Receive(&receivedPacket[offset], targetSize);
         remain_size = remain_size - recv_size;
     }
-    LOG_DEBUG("INET receive: receive success, need check data\n");
+    // LOG_DEBUG("INET receive: receive success, need check data\n");
 
     // hexdump(receivedPacket, packetSize);
 
@@ -344,7 +344,7 @@ int RkAiqSocketClientINETReceive(int commandID, void* data, unsigned int dataSiz
     offset += sizeof(int);
     // data size
     memcpy((void*)&(receivedData.dataSize), receivedPacket + offset, sizeof(unsigned int));
-    LOG_DEBUG("INET receive: receivedData.dataSize:%u\n", receivedData.dataSize);
+    // LOG_DEBUG("INET receive: receivedData.dataSize:%u\n", receivedData.dataSize);
     offset += sizeof(unsigned int);
     // data
     receivedData.data = (char*)malloc(receivedData.dataSize);
@@ -365,11 +365,11 @@ int RkAiqSocketClientINETReceive(int commandID, void* data, unsigned int dataSiz
 
     // hash check
     unsigned int dataHash = MurMurHash(receivedData.data, receivedData.dataSize);
-    LOG_DEBUG("INET receive 2: dataHash calculated:%x\n", dataHash);
-    LOG_DEBUG("INET receive: receivedData.dataHash:%x\n", receivedData.dataHash);
+    // LOG_DEBUG("INET receive 2: dataHash calculated:%x\n", dataHash);
+    // LOG_DEBUG("INET receive: receivedData.dataHash:%x\n", receivedData.dataHash);
 
     if (dataHash == receivedData.dataHash) {
-        LOG_DEBUG("INET receive: data hash check pass\n");
+        // LOG_DEBUG("INET receive: data hash check pass\n");
     } else {
         LOG_DEBUG("INET receive: data hash check failed\n");
     }

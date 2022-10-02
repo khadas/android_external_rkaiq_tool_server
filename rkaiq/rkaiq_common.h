@@ -54,6 +54,7 @@ extern std::shared_ptr<RKAiqToolManager> rkaiq_manager;
 #define RKID_CHECK "IGNORE"
 #define RKID_SEND_FILE "SendFile"
 #define RKID_OFFLINE_RAW "OffRAW"
+#define RKID_GET_AWB_PARA_FILE "GetAWBp"
 
 #pragma pack(1)
 typedef struct CommandData_s {

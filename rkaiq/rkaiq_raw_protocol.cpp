@@ -8,6 +8,7 @@
 #include <iostream>
 #include <vector>
 #include <regex>
+#include <sstream>
 using namespace std;
 
 #ifdef LOG_TAG
@@ -25,6 +26,7 @@ static uint32_t* averge_frame0;
 static uint16_t* averge_frame1;
 static int needSetParamFlag = 1;
 
+extern int g_sensorMemoryMode;
 extern std::string g_sensor_name;
 extern std::shared_ptr<RKAiqMedia> rkaiq_media;
 extern int g_device_id;
@@ -48,6 +50,25 @@ static void ExecuteCMD(const char* cmd, char* result)
     } else {
         printf("popen %s error\n", ps);
     }
+}
+
+static void SendMessageToPC(int sockfd, char* data, unsigned long long dataSize = 0)
+{
+    if (dataSize == 0) {
+        dataSize = strlen(data);
+    }
+    unsigned long long packetSize = strlen("#&#^ToolServerMsg#&#^") + strlen("#&#^@`#`@`#`") + dataSize;
+    unsigned long long offSet = 0;
+    char* dataToSend = (char*)malloc(packetSize);
+    memcpy(dataToSend + offSet, "#&#^ToolServerMsg#&#^", strlen("#&#^ToolServerMsg#&#^"));
+    offSet += strlen("#&#^ToolServerMsg#&#^");
+    memcpy(dataToSend + offSet, data, dataSize);
+    offSet += dataSize;
+    memcpy(dataToSend + offSet, "#&#^@`#`@`#`", strlen("#&#^@`#`@`#`"));
+    offSet += strlen("#&#^@`#`@`#`");
+
+    send(sockfd, dataToSend, packetSize, 0);
+    free(dataToSend);
 }
 
 static int SetLHcg(int mode)
@@ -366,6 +387,13 @@ static void SetCapConf(CommandData_t* recv_cmd, CommandData_t* cmd, int ret_stat
     if (fd < 0) {
         LOG_ERROR("Open dev %s failed.\n", cap_info.dev_name);
     } else {
+        int ret = ioctl(fd, RKCIF_CMD_GET_CSI_MEMORY_MODE, &g_sensorMemoryMode); // get original memory mode
+        if (ret > 0) {
+            LOG_ERROR("get cif node %s memory mode failed.\n", cap_info.dev_name);
+        } else {
+            LOG_INFO("get cif node memory mode:%d .\n", g_sensorMemoryMode);
+        }
+
         if (g_sensorHdrMode == NO_HDR) {
             int value = CSI_LVDS_MEM_WORD_LOW_ALIGN;
             int ret = ioctl(fd, RKCIF_CMD_SET_CSI_MEMORY_MODE, &value); // set to no compact
@@ -568,6 +596,7 @@ static void DoCaptureCallBack(int socket, int index, void* buffer, int size)
         return;
     }
     SendRawData(socket, index, buffer, size);
+    // SendRawDataWithExpInfo(socket, index, buffer, size, &cap_info.expInfo, sizeof(ExpInfo_t1));
 }
 
 static void DoCapture(int socket)
@@ -761,6 +790,23 @@ static void RawCaputure(CommandData_t* cmd, int socket)
         StopCapture();
     }
 
+    //
+    int fd = open(cap_info.dev_name, O_RDWR, 0);
+    LOG_INFO("fd: %d\n", fd);
+    if (fd < 0) {
+        LOG_ERROR("Open dev %s failed.\n", cap_info.dev_name);
+    } else {
+        if (g_sensorHdrMode == NO_HDR) {
+            int ret = ioctl(fd, RKCIF_CMD_SET_CSI_MEMORY_MODE, &g_sensorMemoryMode); // set to original value
+            if (ret > 0) {
+                LOG_ERROR("set cif node %s compact mode failed.\n", cap_info.dev_name);
+            } else {
+                LOG_INFO("cif node %s set to mode %d.\n", cap_info.dev_name, g_sensorMemoryMode);
+            }
+        }
+    }
+    close(fd);
+
     LOG_DEBUG("exit\n");
 }
 
@@ -915,6 +961,7 @@ void RKAiqRawProtocol::HandlerRawCapMessage(int sockfd, char* buffer, int size)
                 InitCommandPingAns(&send_cmd, READY);
                 LOG_DEBUG("Device is READY\n");
             } else {
+                // SendMessageToPC(sockfd, "Unknow CMD_ID_CAPTURE_STATUS message");
                 LOG_ERROR("Unknow CMD_ID_CAPTURE_STATUS message\n");
             }
             memcpy(send_data, &send_cmd, sizeof(CommandData_t));
@@ -937,6 +984,7 @@ void RKAiqRawProtocol::HandlerRawCapMessage(int sockfd, char* buffer, int size)
                             InitCommandRawCapAns(&send_cmd, READY);
                         }
                     } else {
+                        // SendMessageToPC(sockfd, "Unknow DATA_ID_CAPTURE_RAW_STATUS message");
                         LOG_ERROR("Unknow DATA_ID_CAPTURE_RAW_STATUS message\n");
                     }
                     memcpy(send_data, &send_cmd, sizeof(CommandData_t));

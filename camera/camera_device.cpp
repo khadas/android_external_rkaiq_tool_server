@@ -194,7 +194,9 @@ int device_qbuf(int dev_fd, struct v4l2_buffer* buf)
 int device_dqbuf(int dev_fd, struct v4l2_buffer* buf)
 {
     assert(buf);
+    LOG_INFO("device_dqbuf begin\n");
     int ret = xioctl(dev_fd, VIDIOC_DQBUF, buf);
+    LOG_INFO("device_dqbuf end\n");
     if (-1 == ret) {
         switch (errno) {
             case EAGAIN:

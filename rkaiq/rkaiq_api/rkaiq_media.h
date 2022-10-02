@@ -71,6 +71,9 @@ typedef struct {
     std::string mipi_id1;
     std::string mipi_id2;
     std::string mipi_id3;
+    std::string rkcif_tools_id0;
+    std::string rkcif_tools_id1;
+    std::string rkcif_tools_id2;
     std::string mipi_dphy_rx_path;
     std::string mipi_csi2_sd_path;
     std::string lvds_sd_path;

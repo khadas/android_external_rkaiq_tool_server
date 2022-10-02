@@ -111,7 +111,7 @@ typedef struct Capture_Params_s {
     uint32_t time;
     uint8_t lhcg;
     uint8_t bits;
-    uint8_t framenumber;
+    uint16_t framenumber;
     uint8_t multiframe;
     uint32_t vblank;
     uint32_t focus_position;

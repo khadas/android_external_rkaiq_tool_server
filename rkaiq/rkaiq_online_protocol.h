@@ -17,7 +17,7 @@ typedef struct Capture_Yuv_Params_s {
     uint32_t gain;
     uint32_t time;
     uint8_t fmt;
-    uint8_t framenumber;
+    uint16_t framenumber;
 } Capture_Yuv_Params_t;
 #pragma pack()
 

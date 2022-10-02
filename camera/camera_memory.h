@@ -19,6 +19,9 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <vector>
+using namespace std;
+#include "ae/rk_aiq_ae_algo.h"
 
 #include "logger/log.h"
 
@@ -77,6 +80,64 @@ struct lens_t {
     char lens_device_name[DEV_PATH_LEN];
 };
 
+#pragma pack(1)
+typedef struct RkAiqExpRealParam_s1 {
+
+    // M4_NUMBER_DESC("CISTime", "f32", M4_RANGE(0,1), "0", M4_DIGIT(6))
+    float integration_time;
+
+    // M4_NUMBER_DESC("CISGain", "f32", M4_RANGE(0,4096), "0", M4_DIGIT(3))
+    float analog_gain;
+
+    // M4_NUMBER_DESC("digital_gain", "f32", M4_RANGE(0,4096), "0", M4_DIGIT(3),M4_HIDE(1))
+    float digital_gain;
+
+    // M4_NUMBER_DESC("isp_dgain", "f32", M4_RANGE(0,256), "0", M4_DIGIT(3),M4_HIDE(1))
+    float isp_dgain;
+
+    // M4_NUMBER_DESC("iso", "s32", M4_RANGE(0,524288), "0", M4_DIGIT(0),M4_HIDE(1))
+    int iso;
+
+    // M4_NUMBER_DESC("DcgMode", "s32", M4_RANGE(-1,1), "0", M4_DIGIT(0))
+    int dcg_mode;
+
+    // M4_NUMBER_DESC("longfrm_mode", "s32", M4_RANGE(0,1), "0", M4_DIGIT(0),M4_HIDE(1))
+    int longfrm_mode;
+} RkAiqExpRealParam_t1;
+
+typedef struct RkAiqExpSensorParam_s1 {
+
+    // M4_NUMBER_DESC("fine_integration_time", "u32", M4_RANGE(0,65535), "0", M4_DIGIT(0),M4_HIDE(1))
+    unsigned int fine_integration_time;
+
+    // M4_NUMBER_DESC("coarse_integration_time", "u32", M4_RANGE(0,65535), "0", M4_DIGIT(0),M4_HIDE(1))
+    unsigned int coarse_integration_time;
+
+    // M4_NUMBER_DESC("analog_gain_code_global", "u32", M4_RANGE(0,524288), "0", M4_DIGIT(0),M4_HIDE(1))
+    unsigned int analog_gain_code_global;
+
+    // M4_NUMBER_DESC("digital_gain_global", "u32", M4_RANGE(0,65535), "0", M4_DIGIT(0),M4_HIDE(1))
+    unsigned int digital_gain_global;
+
+    // M4_NUMBER_DESC("isp_digital_gain", "u32", M4_RANGE(0,65535), "0", M4_DIGIT(0),M4_HIDE(1))
+    unsigned int isp_digital_gain;
+} RkAiqExpSensorParam_t1;
+
+typedef struct {
+    // M4_STRUCT_DESC("RealPara", "normal_ui_style")
+    RkAiqExpRealParam_t1 exp_real_params; // real value
+
+    // M4_STRUCT_DESC("RegPara", "normal_ui_style",M4_HIDE(1))
+    RkAiqExpSensorParam_t1 exp_sensor_params; // reg value
+} RkAiqExpParamComb_t1;
+
+typedef struct ExpInfo_s1 {
+    uint32_t frameId;
+    RkAiqExpParamComb_t1 linearExp;
+    RkAiqExpParamComb_t1 hdrExp[3];
+} ExpInfo_t1;
+#pragma pack()
+
 struct capture_info {
     const char* dev_name;
     int dev_fd;
@@ -93,6 +154,10 @@ struct capture_info {
     int width;
     int height;
     int lhcg;
+
+    uint sequence;
+    vector<rk_aiq_isp_stats_t> ispStatsList;
+
     enum sensor_link link;
     enum v4l2_buf_type capture_buf_type;
     int frame_count;

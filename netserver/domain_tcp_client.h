@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <mutex>
 
 #include <string>
 
@@ -17,7 +18,7 @@
 #endif
 
 #define SERVER_PORT 5543
-#define UNIX_DOMAIN "/tmp/UNIX.domain"
+#define UNIX_DOMAIN "/tmp/UNIX.domain0"
 
 using namespace std;
 
@@ -30,6 +31,7 @@ class DomainTCPClient
     struct sockaddr_un server;
 
   public:
+    std::timed_mutex m_inetSocketOperationMtx;
     DomainTCPClient();
     virtual ~DomainTCPClient();
     bool Setup(string domainPath);

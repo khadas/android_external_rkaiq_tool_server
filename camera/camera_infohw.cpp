@@ -149,6 +149,16 @@ int get_vicap_subdevs(struct media_device* device, const char* devpath, struct c
         }
     }
 
+    entity = media_get_entity_by_name(device, "rkcif_tools_id0");
+    if (entity) {
+        entity_name = media_entity_get_devname(entity);
+        if (entity_name) {
+            strncpy(media_info->cif_path.cif_video_path, (char*)entity_name,
+                    sizeof(media_info->cif_path.cif_video_path));
+            LOG_DEBUG("get vicap subdev: %s \n", media_info->cif_path.cif_video_path);
+        }
+    }
+
     entity = media_get_entity_by_name(device, "rkcif_lite_mipi_lvds");
     if (entity) {
         entity_name = media_entity_get_devname(entity);

@@ -26,9 +26,10 @@ class RKAiqProtocol
     static void HandlerCheckDevice(int sockfd, char* buffer, int size);
     static void HandlerReceiveFile(int sockfd, char* buffer, int size);
     static void HandlerOfflineRawProcess(int sockfd, char* buffer, int size);
+    static void HandlerGetAWBParaFileProcess(int sockfd, char* buffer, int size);
     static int MessageForward(int sockfd, char* buffer, int size);
     static int doMessageForward(int sockfd);
-    static int offlineRawProcess();
+    static int offlineRawProcess(int sockfd);
     static void KillApp();
     static int StartApp();
     static int StartRTSP();

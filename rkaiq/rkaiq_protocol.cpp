@@ -5,6 +5,9 @@
 #include <dirent.h>
 #include <sys/time.h>
 #include <regex>
+#include <chrono>
+#include <fstream>
+#include <sstream>
 
 #ifdef __ANDROID__
     #include <cutils/properties.h>
@@ -43,6 +46,7 @@ std::unique_ptr<std::thread> RKAiqProtocol::forward_thread = nullptr;
 std::unique_ptr<std::thread> RKAiqProtocol::offlineRawThread = nullptr;
 std::mutex RKAiqProtocol::mutex_;
 static int startOfflineRawFlag = 0;
+int g_offlineRawModeControl;
 
 #define MAX_PACKET_SIZE 8192
 #pragma pack(1)
@@ -68,7 +72,57 @@ typedef struct OfflineRAW_s {
     int offlineRawModeControl;
 } OfflineRAW;
 
+typedef struct TransportAWBPara_s {
+    uint8_t RKID[8]; // "GetAWBp"
+    unsigned long long packetSize;
+    int commandID;
+    int commandResult;
+    void* awbParaFile;
+} TransportAWBPara_t;
 #pragma pack()
+
+static int strcmp_natural(const char* a, const char* b)
+{
+    if (!a || !b) // if one doesn't exist, it comes first
+        return a ? 1 : b ? -1 : 0;
+
+    if (isdigit(*a) && isdigit(*b)) // both start with numbers
+    {
+        char* remainderA;
+        char* remainderB;
+        long valA = strtol(a, &remainderA, 10);
+        long valB = strtol(b, &remainderB, 10);
+        if (valA != valB) {
+            return valA - valB; // smaller comes first
+        } else {
+            std::ptrdiff_t lengthA = remainderA - a;
+            std::ptrdiff_t lengthB = remainderB - b;
+            if (lengthA != lengthB)
+                return lengthA - lengthB; // shorter comes first
+            else                          // all being equal, recurse
+                return strcmp_natural(remainderA, remainderB);
+        }
+    }
+
+    if (isdigit(*a) || isdigit(*b))  // if just one is a number
+        return isdigit(*a) ? -1 : 1; // numbers always come first
+
+    while (*a && *b) // non-numeric characters
+    {
+        if (isdigit(*a) || isdigit(*b))
+            return strcmp_natural(a, b); // recurse
+        if (*a != *b)
+            return *a - *b;
+        a++;
+        b++;
+    }
+    return *a ? 1 : *b ? -1 : 0;
+}
+
+static bool natural_less(const string& lhs, const string& rhs)
+{
+    return strcmp_natural(lhs.c_str(), rhs.c_str()) < 0;
+}
 
 static void HexDump(unsigned char* data, size_t size)
 {
@@ -99,6 +153,68 @@ static void HexDump(unsigned char* data, size_t size)
         offset += 16;
     }
     printf("####\n\n");
+}
+
+static void ExecuteCMD(const char* cmd, char* result)
+{
+    char buf_ps[1024];
+    char ps[1024] = {0};
+    FILE* ptr;
+    strcpy(ps, cmd);
+    if ((ptr = popen(ps, "r")) != NULL) {
+        while (fgets(buf_ps, 1024, ptr) != NULL) {
+            strcat(result, buf_ps);
+            if (strlen(result) > 1024) {
+                break;
+            }
+        }
+        pclose(ptr);
+        ptr = NULL;
+    } else {
+        printf("popen %s error\n", ps);
+    }
+}
+
+static void SendMessageToPC(int sockfd, char* data, unsigned long long dataSize = 0)
+{
+    if (dataSize == 0) {
+        dataSize = strlen(data);
+    }
+    unsigned long long packetSize = strlen("#&#^ToolServerMsg#&#^") + strlen("#&#^@`#`@`#`") + dataSize;
+    unsigned long long offSet = 0;
+    char* dataToSend = (char*)malloc(packetSize);
+    memcpy(dataToSend + offSet, "#&#^ToolServerMsg#&#^", strlen("#&#^ToolServerMsg#&#^"));
+    offSet += strlen("#&#^ToolServerMsg#&#^");
+    memcpy(dataToSend + offSet, data, dataSize);
+    offSet += dataSize;
+    memcpy(dataToSend + offSet, "#&#^@`#`@`#`", strlen("#&#^@`#`@`#`"));
+    offSet += strlen("#&#^@`#`@`#`");
+
+    // HexDump((unsigned char*)dataToSend, packetSize);
+    send(sockfd, dataToSend, packetSize, 0);
+    free(dataToSend);
+}
+
+static void SendFileToPC(int sockfd, char* fileName, char* fileData, unsigned long long fileDataSize = 0)
+{
+    char* opStr = "#&#^ToolServerMsg#&#^SendFile#&#^";
+    unsigned long long packetSize =
+        strlen(opStr) + strlen(fileName) + strlen("#&#^") + fileDataSize + strlen("#&#^@`#`@`#`");
+    char* dataToSend = (char*)malloc(packetSize);
+    unsigned long long offSet = 0;
+    memcpy(dataToSend + offSet, opStr, strlen(opStr));
+    offSet += strlen(opStr);
+    memcpy(dataToSend + offSet, fileName, strlen(fileName));
+    offSet += strlen(fileName);
+    memcpy(dataToSend + offSet, "#&#^", strlen("#&#^"));
+    offSet += strlen("#&#^");
+    memcpy(dataToSend + offSet, fileData, fileDataSize);
+    offSet += fileDataSize;
+    memcpy(dataToSend + offSet, "#&#^@`#`@`#`", strlen("#&#^@`#`@`#`"));
+    offSet += strlen("#&#^@`#`@`#`");
+
+    send(sockfd, dataToSend, packetSize, 0);
+    free(dataToSend);
 }
 
 static int ProcessExists(const char* process_name)
@@ -196,7 +312,9 @@ int RKAiqProtocol::StartRTSP()
 {
     int ret = -1;
 
-    LOG_DEBUG("Starting RTSP !!!");
+    LOG_DEBUG("NOT Starting RTSP !!!");
+    return 0;
+
     KillApp();
     ret = rkaiq_media->LinkToIsp(true);
     if (ret) {
@@ -225,23 +343,32 @@ int RKAiqProtocol::StartRTSP()
     system(isp3a_server_cmd.c_str());
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 #endif
-    if (g_stream_dev_name.empty()) {
-        int isp_ver = rkaiq_media->GetIspVer();
-        LOG_DEBUG(">>>>>>>> isp ver = %d\n", isp_ver);
-        if (isp_ver == 4) {
-            ret = init_rtsp(mi.ispp.pp_scale0_path.c_str(), g_width, g_height);
-        } else if (isp_ver == 5) {
-            ret = init_rtsp(mi.isp.main_path.c_str(), g_width, g_height);
-        } else {
-            ret = init_rtsp(mi.isp.main_path.c_str(), g_width, g_height);
-        }
-    } else {
-        ret = init_rtsp(g_stream_dev_name.c_str(), g_width, g_height);
-    }
-    if (ret) {
-        LOG_ERROR("init_rtsp failed!!");
-        return ret;
-    }
+    // if (g_stream_dev_name.empty())
+    // {
+    //     int isp_ver = rkaiq_media->GetIspVer();
+    //     LOG_DEBUG(">>>>>>>> isp ver = %d\n", isp_ver);
+    //     if (isp_ver == 4)
+    //     {
+    //         ret = init_rtsp(mi.ispp.pp_scale0_path.c_str(), g_width, g_height);
+    //     }
+    //     else if (isp_ver == 5)
+    //     {
+    //         ret = init_rtsp(mi.isp.main_path.c_str(), g_width, g_height);
+    //     }
+    //     else
+    //     {
+    //         ret = init_rtsp(mi.isp.main_path.c_str(), g_width, g_height);
+    //     }
+    // }
+    // else
+    // {
+    //     ret = init_rtsp(g_stream_dev_name.c_str(), g_width, g_height);
+    // }
+    // if (ret)
+    // {
+    //     LOG_ERROR("init_rtsp failed!!");
+    //     return ret;
+    // }
 
     LOG_DEBUG("Started RTSP !!!");
     return 0;
@@ -250,7 +377,7 @@ int RKAiqProtocol::StartRTSP()
 int RKAiqProtocol::StopRTSP()
 {
     LOG_DEBUG("Stopping RTSP !!!");
-    deinit_rtsp();
+    // deinit_rtsp();
 #ifdef __ANDROID__
     system("pkill rkaiq_3A_server*");
 #endif
@@ -261,6 +388,9 @@ int RKAiqProtocol::StopRTSP()
 
 int RKAiqProtocol::DoChangeAppMode(appRunStatus mode)
 {
+    g_app_run_mode = mode;
+    return 0;
+
     std::lock_guard<std::mutex> lg(mutex_);
     int ret = -1;
     LOG_DEBUG("Switch to mode %d->%d\n", g_app_run_mode, mode);
@@ -426,7 +556,7 @@ void RKAiqProtocol::HandlerReceiveFile(int sockfd, char* buffer, int size)
     if (packetSize <= 0 || packetSize - dataSize > 500) {
         printf("FILETRANS no data received or packetSize error, return.\n");
         char tmpBuf[200] = {0};
-        snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##TransferError##");
+        snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Failed##TransferError##");
         std::string resultStr = tmpBuf;
         send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
         return;
@@ -448,7 +578,7 @@ void RKAiqProtocol::HandlerReceiveFile(int sockfd, char* buffer, int size)
         if (currentTime.tv_sec - startTime.tv_sec >= 20) {
             LOG_DEBUG("FILETRANS receive: receive data timeout, return\n");
             char tmpBuf[200] = {0};
-            snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##Timeout##");
+            snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Failed##Timeout##");
             std::string resultStr = tmpBuf;
             send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
             return;
@@ -528,7 +658,7 @@ void RKAiqProtocol::HandlerReceiveFile(int sockfd, char* buffer, int size)
     if (receivedData.dataSize != dataSize) {
         LOG_DEBUG("FILETRANS receive: receivedData.dataSize != target data size, return\n");
         char tmpBuf[200] = {0};
-        snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##DataSizeError##");
+        snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Failed##DataSizeError##");
         std::string resultStr = tmpBuf;
         send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
         return;
@@ -544,7 +674,7 @@ void RKAiqProtocol::HandlerReceiveFile(int sockfd, char* buffer, int size)
     } else {
         LOG_DEBUG("FILETRANS receive: data hash check failed\n");
         char tmpBuf[200] = {0};
-        snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##HashCheckFail##");
+        snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Failed##HashCheckFail##");
         std::string resultStr = tmpBuf;
         send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
         return;
@@ -559,7 +689,7 @@ void RKAiqProtocol::HandlerReceiveFile(int sockfd, char* buffer, int size)
     if (dirPtr == NULL) {
         LOG_DEBUG("FILETRANS target dir %s not exist, return \n", dstDir.c_str());
         char tmpBuf[200] = {0};
-        snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##DirError##");
+        snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Failed##DirError##");
         std::string resultStr = tmpBuf;
         send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
         return;
@@ -573,7 +703,7 @@ void RKAiqProtocol::HandlerReceiveFile(int sockfd, char* buffer, int size)
     } else {
         LOG_DEBUG("FILETRANS failed to create file %s, return\n", dstFilePath.c_str());
         char tmpBuf[200] = {0};
-        snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##FileSaveError##");
+        snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Failed##FileSaveError##");
         std::string resultStr = tmpBuf;
         send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
         return;
@@ -589,9 +719,89 @@ void RKAiqProtocol::HandlerReceiveFile(int sockfd, char* buffer, int size)
     LOG_INFO("receive file %s finished.\n", dstFilePath.c_str());
 
     char tmpBuf[200] = {0};
-    snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Success##%s##", dstFileName.c_str());
+    snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Success##%s##", dstFileName.c_str());
     std::string resultStr = tmpBuf;
     send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
+
+    LOG_DEBUG("g_offlineRawModeControl:%d\n", g_offlineRawModeControl);
+    if (g_offlineRawModeControl == 3) // one frame offline raw
+    {
+        // startOfflineRawFlag = 1;
+        LOG_DEBUG("offlineRawProcess begin\n");
+        // while (startOfflineRawFlag == 1)
+        {
+            DIR* dir = opendir("/data/OfflineRAW");
+            struct dirent* dir_ent = NULL;
+            std::vector<std::string> raw_files;
+            if (dir) {
+                while ((dir_ent = readdir(dir))) {
+                    if (dir_ent->d_type == DT_REG) {
+                        // is raw file
+                        if (strstr(dir_ent->d_name, ".raw")) {
+                            raw_files.push_back(dir_ent->d_name);
+                        }
+                        // is raw file
+                        if (strstr(dir_ent->d_name, ".rkraw")) {
+                            raw_files.push_back(dir_ent->d_name);
+                        }
+                    }
+                }
+                closedir(dir);
+            }
+            if (raw_files.size() == 0) {
+                LOG_INFO("No raw files in /data/OfflineRAW\n");
+                return;
+            }
+
+            std::sort(raw_files.begin(), raw_files.end(), natural_less);
+            for (auto raw_file : raw_files) {
+                cout << raw_file.c_str() << endl;
+                // if (startOfflineRawFlag == 0)
+                // {
+                //     break;
+                // }
+                LOG_DEBUG("ENUM_ID_SYSCTL_ENQUEUERKRAWFILE begin\n");
+                struct timeval tv;
+                struct timezone tz;
+                gettimeofday(&tv, &tz);
+                long startTime = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+                LOG_DEBUG("begin millisecond: %ld\n", startTime); // ms
+                std::string filePath = "/data/OfflineRAW/" + raw_file;
+                LOG_INFO("process raw : %s \n", filePath.c_str());
+
+                g_tcpClient.m_inetSocketOperationMtx.try_lock_for(std::chrono::seconds(2));
+                if (RkAiqSocketClientINETSend(ENUM_ID_SYSCTL_ENQUEUERKRAWFILE, (void*)filePath.c_str(),
+                                              (unsigned int)filePath.length() + 1) != 0) {
+                    LOG_ERROR("########################################################\n");
+                    LOG_ERROR("#### OfflineRawProcess failed. Please check AIQ.####\n");
+                    LOG_ERROR("########################################################\n\n");
+                    // return 1;
+                } else {
+                    char tmp[1024];
+                    g_tcpClient.Receive(tmp, sizeof(tmp));
+                }
+
+                uint32_t frameInterval = 1000 / g_offlineFrameRate;
+                frameInterval = frameInterval - 50;
+                if (frameInterval < 0) {
+                    frameInterval = 0;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(frameInterval));
+
+                gettimeofday(&tv, &tz);
+                long endTime = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+                LOG_DEBUG("end millisecond: %ld\n", endTime);                                                   // ms
+                LOG_DEBUG("####################################### time spend: %ld ms\n", endTime - startTime); // ms
+                LOG_DEBUG("ENUM_ID_SYSCTL_ENQUEUERKRAWFILE end\n");
+
+                SendMessageToPC(sockfd, "ENQUEUERKRAWFILE#&#^Success#&#^Success");
+                usleep(1000 * 50);
+                g_tcpClient.m_inetSocketOperationMtx.unlock();
+            }
+        }
+        std::lock_guard<std::mutex> lk(mutex_);
+        LOG_DEBUG("offlineRawProcess end\n");
+    }
 }
 
 void RKAiqProtocol::HandlerOfflineRawProcess(int sockfd, char* buffer, int size)
@@ -606,10 +816,7 @@ void RKAiqProtocol::HandlerOfflineRawProcess(int sockfd, char* buffer, int size)
     LOG_DEBUG("receive : packetSize:%llu\n", packetSize);
     if (packetSize <= 0 || packetSize > 50) {
         printf("no data received or packetSize error, return.\n");
-        // char tmpBuf[200] = {0};
-        // snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##TransferError##");
-        // std::string resultStr = tmpBuf;
-        // send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
+        // SendMessageToPC(sockfd, "no data received or packetSize error");
         return;
     }
 
@@ -626,13 +833,10 @@ void RKAiqProtocol::HandlerOfflineRawProcess(int sockfd, char* buffer, int size)
     LOG_DEBUG("start receive:%ld\n", startTime.tv_sec);
     while (remain_size > 0) {
         clock_gettime(CLOCK_REALTIME, &currentTime);
-        if (currentTime.tv_sec - startTime.tv_sec >= 20) {
-            LOG_DEBUG("receive: receive data timeout, return\n");
-            // char tmpBuf[200] = {0};
-            // snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Failed##Timeout##");
-            // std::string resultStr = tmpBuf;
-            // send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
-            return;
+        if (currentTime.tv_sec - startTime.tv_sec >= 5) {
+            LOG_DEBUG("receive: receive data 5 sec timeout, break\n");
+            // SendMessageToPC(sockfd, "receive data timeout");
+            break;
         }
 
         unsigned long long offset = packetSize - remain_size;
@@ -673,10 +877,11 @@ void RKAiqProtocol::HandlerOfflineRawProcess(int sockfd, char* buffer, int size)
     offset += sizeof(int);
 
     // start process offline process
+    g_offlineRawModeControl = receivedData.offlineRawModeControl;
     if (receivedData.offlineRawModeControl == 1) // start
     {
         LOG_INFO("#### start offline RAW mode. ####\n");
-        forward_thread = std::unique_ptr<std::thread>(new std::thread(&RKAiqProtocol::offlineRawProcess));
+        forward_thread = std::unique_ptr<std::thread>(new std::thread(&RKAiqProtocol::offlineRawProcess, sockfd));
         forward_thread->detach();
         LOG_INFO("#### offline RAW mode stopped. ####\n");
     } else if (receivedData.offlineRawModeControl == 0) // stop
@@ -686,32 +891,65 @@ void RKAiqProtocol::HandlerOfflineRawProcess(int sockfd, char* buffer, int size)
     {
         LOG_DEBUG("#### remove offline RAW config file. ####\n");
         system("rm -f /tmp/aiq_offline.ini && sync");
+    } else if (receivedData.offlineRawModeControl == 3) // one frame
+    {
+        LOG_DEBUG("#### offline RAW one frame. ####\n");
+        system("rm -f /data/OfflineRAW/* && sync");
+    } else if (receivedData.offlineRawModeControl == 4) // clear raw files
+    {
+        system("rm -f /data/OfflineRAW/* && sync");
     }
     LOG_DEBUG("HandlerOfflineRawProcess process finished.\n");
 
     // char tmpBuf[200] = {0};
-    // snprintf(tmpBuf, sizeof(tmpBuf), "##StatusMessage##FileTransfer##Success##%s##", dstFileName.c_str());
+    // snprintf(tmpBuf, sizeof(tmpBuf), "##ToolServerMsg##FileTransfer##Success##%s##", dstFileName.c_str());
     // std::string resultStr = tmpBuf;
     // send(sockfd, (char*)resultStr.c_str(), resultStr.length(), 0);
 }
 
-static void ExecuteCMD(const char* cmd, char* result)
+void RKAiqProtocol::HandlerGetAWBParaFileProcess(int sockfd, char* buffer, int size)
 {
-    char buf_ps[2048];
-    char ps[2048] = {0};
-    FILE* ptr;
-    strcpy(ps, cmd);
-    if ((ptr = popen(ps, "r")) != NULL) {
-        while (fgets(buf_ps, 2048, ptr) != NULL) {
-            strcat(result, buf_ps);
-            if (strlen(result) > 2048) {
-                break;
-            }
-        }
-        pclose(ptr);
-        ptr = NULL;
+    system("rm /tmp/awbinput_*");
+    usleep(1000 * 100);
+    LOG_INFO("call RkAiqSocketClientINETSend(ENUM_ID_AIQ_UAPI2_AWB_WRITEAWBIN);\n");
+    char* tmpData = "0";
+
+    if (RkAiqSocketClientINETSend(ENUM_ID_AIQ_UAPI2_AWB_WRITEAWBIN, (void*)tmpData, 1) != 0) {
+        LOG_ERROR("########################################################\n");
+        LOG_ERROR("#### OfflineRawProcess failed. Please check AIQ.####\n");
+        LOG_ERROR("########################################################\n\n");
+        return;
     } else {
-        printf("popen %s error\n", ps);
+        char tmp[256];
+        g_tcpClient.Receive(tmp, sizeof(tmp));
+    }
+    usleep(1000 * 500);
+    system("ls -l /tmp/awb*");
+
+    char result[2048] = {0};
+    std::string pattern{"/tmp/(awbinput_.*)"};
+    std::regex re(pattern);
+    std::smatch results;
+    ExecuteCMD("ls -l /tmp/awb*", result);
+    std::string srcStr = result;
+    // LOG_INFO("#### srcStr:%s\n", srcStr.c_str());
+    if (std::regex_search(srcStr, results, re)) // finded
+    {
+        string awbParaFilaPath = results.str(0);
+        string awbParaFileName = results.str(1);
+        LOG_DEBUG("AWB para filePath:%s\n", awbParaFilaPath.c_str());
+        LOG_DEBUG("AWB para fileName:%s\n", awbParaFileName.c_str());
+
+        std::ifstream t(awbParaFilaPath.c_str());
+        t.seekg(0, std::ios::end);
+        size_t fileSize = t.tellg();
+        std::string fileData(fileSize, ' ');
+        t.seekg(0);
+        t.read(&fileData[0], fileSize);
+
+        SendFileToPC(sockfd, (char*)awbParaFileName.c_str(), (char*)fileData.c_str(), fileSize);
+    } else {
+        LOG_DEBUG("AWB para file not found.\n");
     }
 }
 
@@ -735,6 +973,7 @@ void RKAiqProtocol::HandlerTCPMessage(int sockfd, char* buffer, int size)
         if (std::regex_search(srcStr, results, re)) // finded
         {
             LOG_INFO("Isp online, please use online raw capture.\n");
+            // SendMessageToPC(sockfd, "Isp online, please use online raw capture.");
             return;
         }
         RKAiqRawProtocol::HandlerRawCapMessage(sockfd, buffer, size);
@@ -746,6 +985,8 @@ void RKAiqProtocol::HandlerTCPMessage(int sockfd, char* buffer, int size)
         HandlerReceiveFile(sockfd, buffer, size);
     } else if (memcmp((char*)common_cmd->RKID, RKID_OFFLINE_RAW, 6) == 0) {
         HandlerOfflineRawProcess(sockfd, buffer, size);
+    } else if (memcmp((char*)common_cmd->RKID, RKID_GET_AWB_PARA_FILE, 6) == 0) {
+        HandlerGetAWBParaFileProcess(sockfd, buffer, size);
     } else {
         resetThreadFlag = 0;
         if (!DoChangeAppMode(APP_RUN_STATUS_TUNRING))
@@ -755,12 +996,17 @@ void RKAiqProtocol::HandlerTCPMessage(int sockfd, char* buffer, int size)
 
 int RKAiqProtocol::doMessageForward(int sockfd)
 {
+    auto stopReceiveTimer = std::chrono::high_resolution_clock::now();
     is_recv_running = true;
     while (is_recv_running) {
+        LOG_DEBUG("doMessageForward is_recv_running\n");
         char recv_buffer[MAXPACKETSIZE] = {0};
         int recv_len = g_tcpClient.Receive(recv_buffer, MAXPACKETSIZE);
+        LOG_DEBUG("doMessageForward recv_len:%d\n", recv_len);
         if (recv_len > 0) {
+            stopReceiveTimer = std::chrono::high_resolution_clock::now();
             ssize_t ret = send(sockfd, recv_buffer, recv_len, 0);
+            // HexDump((unsigned char*)recv_buffer, recv_len);
             if (ret < 0) {
                 LOG_ERROR("#########################################################\n");
                 LOG_ERROR("## Forward socket %d failed, please check AIQ status.####\n", sockfd);
@@ -769,23 +1015,40 @@ int RKAiqProtocol::doMessageForward(int sockfd)
                 close(sockfd);
                 std::lock_guard<std::mutex> lk(mutex_);
                 is_recv_running = false;
+                g_tcpClient.m_inetSocketOperationMtx.unlock();
                 return -1;
             }
-        } else if (recv_len < 0 && errno != EAGAIN) {
-            g_tcpClient.Close();
-            close(sockfd);
-            std::lock_guard<std::mutex> lk(mutex_);
-            is_recv_running = false;
-            return -1;
+        } else if (recv_len <= 0) {
+            LOG_DEBUG("doMessageForward errno:%d\n", errno);
+            if (errno != EAGAIN) {
+                g_tcpClient.Close();
+                close(sockfd);
+                std::lock_guard<std::mutex> lk(mutex_);
+                is_recv_running = false;
+                g_tcpClient.m_inetSocketOperationMtx.unlock();
+                return -1;
+            } else {
+                auto now = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<double, std::milli> waitTime = now - stopReceiveTimer;
+                if (std::chrono::duration<double, std::milli>(waitTime) >
+                    std::chrono::duration<double, std::milli>(200)) {
+                    LOG_DEBUG("waitTime xx:%f\n", waitTime.count());
+                    LOG_DEBUG("doMessageForward stop receive\n");
+                    std::lock_guard<std::mutex> lk(mutex_);
+                    is_recv_running = false;
+                }
+            }
         }
     }
 
     std::lock_guard<std::mutex> lk(mutex_);
     is_recv_running = false;
+    g_tcpClient.m_inetSocketOperationMtx.unlock();
+
     return 0;
 }
 
-int RKAiqProtocol::offlineRawProcess()
+int RKAiqProtocol::offlineRawProcess(int sockfd)
 {
     startOfflineRawFlag = 1;
     LOG_DEBUG("offlineRawProcess begin\n");
@@ -800,6 +1063,10 @@ int RKAiqProtocol::offlineRawProcess()
                     if (strstr(dir_ent->d_name, ".raw")) {
                         raw_files.push_back(dir_ent->d_name);
                     }
+                    // is raw file
+                    if (strstr(dir_ent->d_name, ".rkraw")) {
+                        raw_files.push_back(dir_ent->d_name);
+                    }
                 }
             }
             closedir(dir);
@@ -809,7 +1076,7 @@ int RKAiqProtocol::offlineRawProcess()
             return 1;
         }
 
-        std::sort(raw_files.begin(), raw_files.end());
+        std::sort(raw_files.begin(), raw_files.end(), natural_less);
         for (auto raw_file : raw_files) {
             cout << raw_file.c_str() << endl;
             if (startOfflineRawFlag == 0) {
@@ -823,15 +1090,25 @@ int RKAiqProtocol::offlineRawProcess()
             LOG_DEBUG("begin millisecond: %ld\n", startTime); // ms
             std::string filePath = "/data/OfflineRAW/" + raw_file;
             LOG_INFO("process raw : %s \n", filePath.c_str());
+
+            g_tcpClient.m_inetSocketOperationMtx.try_lock_for(std::chrono::seconds(2));
             if (RkAiqSocketClientINETSend(ENUM_ID_SYSCTL_ENQUEUERKRAWFILE, (void*)filePath.c_str(),
                                           (unsigned int)filePath.length() + 1) != 0) {
                 LOG_ERROR("########################################################\n");
                 LOG_ERROR("#### OfflineRawProcess failed. Please check AIQ.####\n");
                 LOG_ERROR("########################################################\n\n");
-                return 1;
+                // return 1;
+            } else {
+                char tmp[1024];
+                g_tcpClient.Receive(tmp, sizeof(tmp));
             }
+            g_tcpClient.m_inetSocketOperationMtx.unlock();
 
             uint32_t frameInterval = 1000 / g_offlineFrameRate;
+            frameInterval = frameInterval - 50;
+            if (frameInterval < 0) {
+                frameInterval = 0;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(frameInterval));
 
             gettimeofday(&tv, &tz);
@@ -848,8 +1125,14 @@ int RKAiqProtocol::offlineRawProcess()
 
 int RKAiqProtocol::MessageForward(int sockfd, char* buffer, int size)
 {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (is_recv_running) {
+        LOG_DEBUG("is_recv_running return.\n");
+        return 0;
+    }
+
     LOG_DEBUG("[%s]got data:%d!\n", __func__, size);
-    // HexDump((unsigned char*)buffer, size);
+    HexDump((unsigned char*)buffer, size);
     int ret = g_tcpClient.Send((char*)buffer, size);
     if (ret < 0 && (errno != EAGAIN && errno != EINTR)) {
         if (ConnectAiq() < 0) {
@@ -868,17 +1151,16 @@ int RKAiqProtocol::MessageForward(int sockfd, char* buffer, int size)
         }
     }
 
-    std::lock_guard<std::mutex> lk(mutex_);
-    if (is_recv_running) {
-        return 0;
-    }
-
 #if 0
   if (forward_thread && forward_thread->joinable()) forward_thread->join();
 #endif
 
-    forward_thread = std::unique_ptr<std::thread>(new std::thread(&RKAiqProtocol::doMessageForward, sockfd));
-    forward_thread->detach();
+    if (g_tcpClient.m_inetSocketOperationMtx.try_lock_for(std::chrono::milliseconds(1))) {
+        forward_thread = std::unique_ptr<std::thread>(new std::thread(&RKAiqProtocol::doMessageForward, sockfd));
+        forward_thread->detach();
+    } else {
+        LOG_DEBUG("doMessageForward in process return.\n");
+    }
 
     return 0;
 }

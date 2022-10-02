@@ -4,6 +4,8 @@
 #include <atomic>
 #include <ctime>
 #include <thread>
+#include <sys/types.h>
+#include <dirent.h>
 
 #include "camera_infohw.h"
 #include "domain_tcp_client.h"
@@ -26,6 +28,8 @@
 #define LOG_TAG "aiqtool"
 
 DomainTCPClient g_tcpClient;
+string g_linuxSocketDomainPath = "/tmp/UNIX.domain0";
+
 struct ucred* g_aiqCred = nullptr;
 std::atomic_bool quit{false};
 std::atomic<int> g_app_run_mode(APP_RUN_STATUS_INIT);
@@ -39,10 +43,12 @@ int g_rtsp_en_from_cmdarg = 0;
 int g_allow_killapp = 0;
 int g_cam_count = 0;
 uint32_t g_sensorHdrMode = 0;
+std::string g_capture_dev_name = "";
 
 std::string g_stream_dev_name;
 std::string iqfile;
 std::string g_sensor_name;
+int g_sensorMemoryMode = -1;
 
 std::shared_ptr<TCPServer> tcpServer = nullptr;
 #if 0
@@ -58,8 +64,8 @@ void signal_handle(int sig)
 
     RKAiqProtocol::Exit();
 
-    if (g_rtsp_en)
-        deinit_rtsp();
+    // if (g_rtsp_en)
+    //     deinit_rtsp();
 }
 
 static int get_env(const char* name, int* value, int default_value)
@@ -80,7 +86,7 @@ static int get_env(const char* name, int* value, int default_value)
     return 0;
 }
 
-static const char short_options[] = "s:r:i:m:Dd:w:h:n:f:";
+static const char short_options[] = "c:s:r:i:m:Dd:w:h:n:f:";
 static const struct option long_options[] = {{"stream_dev", required_argument, NULL, 's'},
                                              {"enable_rtsp", required_argument, NULL, 'r'},
                                              {"iqfile", required_argument, NULL, 'i'},
@@ -133,9 +139,9 @@ static int parse_args(int argc, char** argv)
                 break;
             case 'n':
                 g_mmapNumber = (uint32_t)atoi(optarg);
-                if (g_mmapNumber < 4 || g_mmapNumber > 200) {
+                if (g_mmapNumber < 4) {
                     g_mmapNumber = 4;
-                    LOG_INFO("mmap Number out of range[4,200], use default 4\n");
+                    LOG_INFO("mmap Number out of range[4,x], use minimum value 4\n");
                 }
                 break;
             case 'f':
@@ -147,7 +153,10 @@ static int parse_args(int argc, char** argv)
                 }
                 LOG_INFO("set framerate:%u\n", g_offlineFrameRate);
                 break;
-
+            case 'c':
+                g_capture_dev_name = optarg;
+                LOG_INFO("capture image using compact mode. capture dev name:%s\n", g_capture_dev_name.c_str());
+                break;
             default:
                 break;
         }
@@ -163,107 +172,10 @@ static int parse_args(int argc, char** argv)
     return ret;
 }
 
-static void RawCaptureinit()
-{
-    struct capture_info cap_info;
-    media_info_t mi = rkaiq_media->GetMediaInfoT(g_device_id);
-    if (mi.cif.linked_sensor) {
-        cap_info.link = link_to_vicap;
-        strcpy(cap_info.sd_path.device_name, mi.cif.sensor_subdev_path.c_str());
-        strcpy(cap_info.cif_path.cif_video_path, mi.cif.mipi_id0.c_str());
-        cap_info.dev_name = cap_info.cif_path.cif_video_path;
-    } else if (mi.dvp.linked_sensor) {
-        cap_info.link = link_to_dvp;
-        strcpy(cap_info.sd_path.device_name, mi.dvp.sensor_subdev_path.c_str());
-        strcpy(cap_info.cif_path.cif_video_path, mi.dvp.dvp_id0.c_str());
-        cap_info.dev_name = cap_info.cif_path.cif_video_path;
-    } else {
-        cap_info.link = link_to_isp;
-        strcpy(cap_info.sd_path.device_name, mi.isp.sensor_subdev_path.c_str());
-        strcpy(cap_info.vd_path.isp_main_path, mi.isp.main_path.c_str());
-        cap_info.dev_name = cap_info.vd_path.isp_main_path;
-    }
-    strcpy(cap_info.vd_path.media_dev_path, mi.isp.media_dev_path.c_str());
-    strcpy(cap_info.vd_path.isp_sd_path, mi.isp.isp_dev_path.c_str());
-    if (mi.lens.module_lens_dev_name.length()) {
-        strcpy(cap_info.lens_path.lens_device_name, mi.lens.module_lens_dev_name.c_str());
-    } else {
-        cap_info.lens_path.lens_device_name[0] = '\0';
-    }
-    cap_info.dev_fd = -1;
-    cap_info.subdev_fd = -1;
-    cap_info.lensdev_fd = -1;
-    LOG_DEBUG("cap_info.link: %d \n", cap_info.link);
-    LOG_DEBUG("cap_info.dev_name: %s \n", cap_info.dev_name);
-    LOG_DEBUG("cap_info.isp_media_path: %s \n", cap_info.vd_path.media_dev_path);
-    LOG_DEBUG("cap_info.vd_path.isp_sd_path: %s \n", cap_info.vd_path.isp_sd_path);
-    LOG_DEBUG("cap_info.sd_path.device_name: %s \n", cap_info.sd_path.device_name);
-    LOG_DEBUG("cap_info.lens_path.lens_dev_name: %s \n", cap_info.lens_path.lens_device_name);
-
-    cap_info.io = IO_METHOD_MMAP;
-    cap_info.height = g_height;
-    cap_info.width = g_width;
-    // cap_info.format = v4l2_fourcc('B', 'G', '1', '2');
-    LOG_DEBUG("get ResW: %d  ResH: %d\n", cap_info.width, cap_info.height);
-
-    //
-    int fd = device_open(cap_info.sd_path.device_name);
-    LOG_DEBUG("sensor subdev path: %s\n", cap_info.sd_path.device_name);
-    LOG_DEBUG("cap_info.subdev_fd: %d\n", fd);
-    if (fd < 0) {
-        LOG_ERROR("Open %s failed.\n", cap_info.sd_path.device_name);
-    } else {
-        rkmodule_hdr_cfg hdrCfg;
-        int ret = ioctl(fd, RKMODULE_GET_HDR_CFG, &hdrCfg);
-        if (ret > 0) {
-            g_sensorHdrMode = NO_HDR;
-            LOG_ERROR("Get sensor hdr mode failed, use default, No HDR\n");
-        } else {
-            g_sensorHdrMode = hdrCfg.hdr_mode;
-            LOG_INFO("Get sensor hdr mode:%u\n", g_sensorHdrMode);
-        }
-    }
-    close(fd);
-    if (mi.cif.linked_sensor) {
-        if (g_sensorHdrMode == NO_HDR) {
-            LOG_INFO("Get sensor mode: NO_HDR\n");
-            strcpy(cap_info.cif_path.cif_video_path, mi.cif.mipi_id0.c_str());
-            cap_info.dev_name = cap_info.cif_path.cif_video_path;
-        } else if (g_sensorHdrMode == HDR_X2) {
-            LOG_INFO("Get sensor mode: HDR_2\n");
-            strcpy(cap_info.cif_path.cif_video_path, mi.cif.mipi_id1.c_str());
-            cap_info.dev_name = cap_info.cif_path.cif_video_path;
-        } else if (g_sensorHdrMode == HDR_X3) {
-            LOG_INFO("Get sensor mode: HDR_3\n");
-            strcpy(cap_info.cif_path.cif_video_path, mi.cif.mipi_id2.c_str());
-            cap_info.dev_name = cap_info.cif_path.cif_video_path;
-        }
-    }
-    //
-    fd = open(cap_info.dev_name, O_RDWR, 0);
-    LOG_INFO("fd: %d\n", fd);
-    if (fd < 0) {
-        LOG_ERROR("Open dev %s failed.\n", cap_info.dev_name);
-    } else {
-        if (g_sensorHdrMode == NO_HDR) {
-            int value = CSI_LVDS_MEM_WORD_LOW_ALIGN;
-            int ret = ioctl(fd, RKCIF_CMD_SET_CSI_MEMORY_MODE, &value); // set to no compact
-            if (ret > 0) {
-                LOG_ERROR("set cif node %s compact mode failed.\n", cap_info.dev_name);
-            } else {
-                LOG_INFO("cif node %s set to no compact mode.\n", cap_info.dev_name);
-            }
-        } else {
-            LOG_INFO("cif node HDR mode, compact format as default.\n");
-        }
-    }
-    close(fd);
-}
-
 int main(int argc, char** argv)
 {
     int ret = -1;
-    LOG_ERROR("#### AIQ tool server v2.0.6-20220215_145026 ####\n");
+    LOG_ERROR("#### AIQ tool server 20221001_110437 ####\n");
 
 #ifdef _WIN32
     signal(SIGINT, signal_handle);
@@ -302,7 +214,7 @@ int main(int argc, char** argv)
     // readback = strtoull(property_value, nullptr, 16);
 #else
     get_env("rkaiq_tool_server_log_level", &log_level,
-            LOG_LEVEL_INFO); // LOG_LEVEL_ERROR   LOG_LEVEL_WARN  LOG_LEVEL_INFO  LOG_LEVEL_DEBUG
+            LOG_LEVEL_DEBUG); // LOG_LEVEL_ERROR   LOG_LEVEL_WARN  LOG_LEVEL_INFO  LOG_LEVEL_DEBUG
     get_env("rkaiq_tool_server_kill_app", &g_allow_killapp, 0);
 #endif
 
@@ -323,7 +235,6 @@ int main(int argc, char** argv)
 
     LOG_DEBUG("================== %d =====================\n", g_app_run_mode.load());
     system("mkdir -p /data/OfflineRAW && sync");
-    RawCaptureinit();
 
     // return 0;
     if (g_stream_dev_name.length() > 0) {
@@ -340,25 +251,76 @@ int main(int argc, char** argv)
         }
     }
 
-    if (g_rtsp_en && g_stream_dev_name.length() > 0) {
-        ret = RKAiqProtocol::DoChangeAppMode(APP_RUN_STATUS_STREAMING);
-        if (ret != 0) {
-            LOG_ERROR("Failed set mode to tunning mode, does app started?\n");
+    // if (g_rtsp_en && g_stream_dev_name.length() > 0)
+    // {
+    //     ret = RKAiqProtocol::DoChangeAppMode(APP_RUN_STATUS_STREAMING);
+    //     if (ret != 0)
+    //     {
+    //         LOG_ERROR("Failed set mode to tunning mode, does app started?\n");
+    //     }
+    // }
+    // else
+    // {
+    //     ret = RKAiqProtocol::DoChangeAppMode(APP_RUN_STATUS_TUNRING);
+    //     if (ret != 0)
+    //     {
+    //         LOG_ERROR("Failed set mode to tunning mode, does app started?\n");
+    //     }
+    // }
+
+#ifdef __ANDROID__
+    if (g_tcpClient.Setup(LOCAL_SOCKET_PATH) == false) {
+        LOG_DEBUG("domain connect failed\n");
+        g_tcpClient.Close();
+        return -1;
+    }
+#else
+    DIR* dir = opendir("/tmp");
+    struct dirent* dir_ent = NULL;
+    std::vector<std::string> domainSocketNodes;
+    if (dir) {
+        while ((dir_ent = readdir(dir))) {
+            if (dir_ent->d_type == DT_SOCK) {
+                if (strstr(dir_ent->d_name, "UNIX.domain") != NULL) {
+                    domainSocketNodes.push_back(dir_ent->d_name);
+                }
+            }
         }
-    } else {
-        ret = RKAiqProtocol::DoChangeAppMode(APP_RUN_STATUS_TUNRING);
-        if (ret != 0) {
-            LOG_ERROR("Failed set mode to tunning mode, does app started?\n");
+        closedir(dir);
+    }
+    std::sort(domainSocketNodes.begin(), domainSocketNodes.end());
+    // for (string socketNode : domainSocketNodes)
+    // {
+    //     LOG_INFO("socketNode:%s\n", socketNode.c_str());
+    // }
+
+    if (domainSocketNodes.size() > 1) {
+        LOG_INFO("################ Please input camera index to connect\n");
+        for (int i = 0; i < domainSocketNodes.size(); i++) {
+            string tmpStr = domainSocketNodes[i];
+            tmpStr = tmpStr.replace(tmpStr.find("UNIX.domain"), strlen("UNIX.domain"), "");
+            LOG_INFO("camera %d ,please input %s\n", i, tmpStr.c_str());
         }
+        LOG_INFO("----\n");
+        LOG_INFO("PLEASE INPUT CAMERA INDEX:");
+
+        int camIndexInput = getchar() - '0';
+        LOG_INFO("camera index %d:\n", camIndexInput);
+        sprintf((char*)g_linuxSocketDomainPath.c_str(), "/tmp/UNIX.domain%d", camIndexInput);
+        while (access(g_linuxSocketDomainPath.c_str(), F_OK) == -1) {
+            camIndexInput = getchar() - '0';
+            LOG_INFO("camera index %d:\n", camIndexInput);
+            sprintf((char*)g_linuxSocketDomainPath.c_str(), "/tmp/UNIX.domain%d", camIndexInput);
+        }
+        LOG_INFO("camera socket node %s selected\n", g_linuxSocketDomainPath.c_str());
     }
 
-    if (g_tcpClient.Setup("/tmp/UNIX.domain") == false) {
+    if (g_tcpClient.Setup(g_linuxSocketDomainPath.c_str()) == false) {
         LOG_INFO("#### ToolServer connect AIQ failed ####\n");
-        // g_tcpClient.Close();
-        // return -1;
     } else {
         LOG_INFO("#### ToolServer connect AIQ success ####\n");
     }
+#endif
 
     pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
     tcpServer = std::make_shared<TCPServer>();
@@ -376,10 +338,11 @@ int main(int argc, char** argv)
         g_aiqCred = nullptr;
     }
 
-    if (g_rtsp_en) {
-        system("pkill rkaiq_3A_server*");
-        deinit_rtsp();
-    }
+    // if (g_rtsp_en)
+    // {
+    //     system("pkill rkaiq_3A_server*");
+    //     deinit_rtsp();
+    // }
 
 #if 0
   rkaiq_manager.reset();

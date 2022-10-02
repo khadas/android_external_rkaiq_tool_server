@@ -66,6 +66,9 @@ void init_mmap(struct capture_info* cap_info)
         exit(EXIT_FAILURE);
     }
 
+    LOG_DEBUG("g_mmapNumber:%d\n", g_mmapNumber);
+    LOG_DEBUG("req.count:%d\n", req.count);
+
     for (cap_info->n_buffers = 0; cap_info->n_buffers < req.count; ++cap_info->n_buffers) {
         struct v4l2_buffer buf;
         struct v4l2_plane planes[FMT_NUM_PLANES];
@@ -102,10 +105,6 @@ void init_mmap(struct capture_info* cap_info)
         }
 
         memset(cap_info->buffers[cap_info->n_buffers].start, 0, cap_info->buffers[cap_info->n_buffers].length);
-    }
-
-    if (g_mmapNumber != 4) {
-        LOG_INFO("mmap init finished.memory map: allocated/request: %u/%u \n", req.count, g_mmapNumber);
     }
 }
 
